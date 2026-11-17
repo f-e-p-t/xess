@@ -1,7 +1,7 @@
 # Xess
 
 ## Overview
-Xess is a lightweight UCI bitboard chess engine. **Always** compile with '-O3' for best performance.
+Xess is a lightweight UCI bitboard chess engine written in C++. **Always** compile with '-O3' for best performance.
 
 ## Engine Search
 Xess uses magic bitboards for fast move generation and filtering legal moves. It searches with a traditional alpha-beta algorithm that revolves around principal variation search (PVS). This is highly optimised by a selection of move ordering heuristics and several pruning heuristics.
