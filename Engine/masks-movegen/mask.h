@@ -1,10 +1,8 @@
-#include "utils-initialisation.h"
+#include "../utils-initialisation.h"
 #include <iostream>
 #include <string>
 #include <cstdint>
 #include <bitset>
-#include <vector>
-#include <algorithm>
 
 // |----------------|
 // | Masks and XORs |----------------------------------------------------------

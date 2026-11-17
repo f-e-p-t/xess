@@ -1,4 +1,4 @@
-#include "movegen.h"
+#include "../masks-movegen/movegen.h"
 #include <iostream>
 
 // |------------|

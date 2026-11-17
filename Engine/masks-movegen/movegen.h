@@ -1,8 +1,7 @@
 #include "mask.h"
-#include "heatmap.h"
+#include "../evaluation-move-ordering/heatmap.h"
 #include <windows.h>
 #include <thread>
-#include <atomic>
 #include <chrono>
 #include <iostream>
 

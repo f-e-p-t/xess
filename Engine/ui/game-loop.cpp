@@ -1,4 +1,4 @@
-#include "engine-search.h"
+#include "../engine-search.h"
 #include <sstream>
 #include <iostream>
 
@@ -298,22 +298,13 @@ int main(){
 
     InitialiseAll();
 
-    //std::stringstream x("fen r1b1r1k1/1ppq1ppp/1nn5/pQ2p1B1/3b4/2NP1NP1/PP2PPBP/R1R3K1 w - - 4 13");
-    //ParseUCICommand_position(x);
-
-    //std::stringstream y("go wtime 165400 btime 172100 winc 2000 binc 2000 movestogo 36");
-    //ParseUCICommand_go(y);
-
-    //std::stringstream z("go infinite");
-    //ParseUCICommand_go(z);
-
     UCILoop();
 
     ParseFEN(FEN);
     InitialiseAll();
     PrintBoardToTerminal();
 
-    // ------------
+    /*
 
     // Gameplay loop
     while(GameFinishedType() == GameEnd::in_play){
@@ -349,6 +340,8 @@ int main(){
 
         PrintBoardToTerminal();
     }
+
+    */
 
     return 0;
 }
