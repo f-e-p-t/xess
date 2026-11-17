@@ -1,5 +1,9 @@
 #include "mask.h"
 #include "heatmap.h"
+#include <windows.h>
+#include <thread>
+#include <atomic>
+#include <chrono>
 #include <iostream>
 
 std::string start_pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -18,9 +22,8 @@ std::string other1 = "1r2k3/p1q1bp2/2ppbnr1/4p3/4P2p/2NB4/PPP1QPPP/1RB1R1K1 w - 
 // | Settings |------------------------------------------------------
 // |----------|
 
-std::string FEN = start_pos;
+std::string FEN = bad_move1;
 Colour player_playing_as = Colour::white;
-int engine_search_depth_max = MAX_PLY;
 DWORD engine_search_time_limit_ms = 15000; // <-- (-1 = no timer)
 int engine_transposition_table_size_MB = 512;
 bool wipe_TT_each_move = true;
@@ -786,6 +789,42 @@ bool Repetition(Stack * ss){
 
     return false;
 }
+
+// |--------------|
+// | Search Timer |------------------------------------------------------------
+// |--------------|
+
+class SearchTimer {
+public:
+    void SetTimer(int ms){
+        std::chrono::milliseconds delay(ms);
+        time_of_last_set = std::chrono::steady_clock::now();
+        stop_time = std::chrono::steady_clock::now() + delay;
+    }
+
+    int MillisecondsSinceLastSet(){
+        auto diff = std::chrono::steady_clock::now() - time_of_last_set;
+        return std::chrono::duration_cast<std::chrono::milliseconds>(diff).count();
+    }
+
+    void CancelTimer(){
+        stop_time = std::chrono::steady_clock::time_point::max();
+    }
+
+    void StopImmediately(){
+        stop_time = std::chrono::steady_clock::now();
+    }
+
+    bool TimeUp(){
+        return (std::chrono::steady_clock::now() >= stop_time);
+    }
+private:
+    std::chrono::steady_clock::time_point stop_time;
+
+    std::chrono::steady_clock::time_point time_of_last_set;
+};
+
+SearchTimer search_timer;
 
 // |---------------------|
 // | Transposition Table |-----------------------------------------------------

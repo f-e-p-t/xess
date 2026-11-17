@@ -1,19 +1,9 @@
-#include "./fepttp-distrib/fepttp.h"
 #include "engine-search.h"
-#include "json.hpp"
+#include <sstream>
 #include <iostream>
 
-using json = nlohmann::json;
-
-Board UI_board = board;
-int last_move_source_and_target[2] = {0};
-void UpdateLastMoveSourceAndTarget(uint16_t move){
-    int source = move & 0b0000000000111111;
-    int target = (move >> 6) & 0b0000000000111111;
-    last_move_source_and_target[0] = source; last_move_source_and_target[1] = target;
-}
-
 void InitialiseAll(){
+    engine.transposition_table_size_MB = engine_transposition_table_size_MB;
     TT.SetSize(engine.transposition_table_size_MB);
     InitialiseZobristKeys();
     InitialiseHashKey();
@@ -132,65 +122,198 @@ GameEnd GameFinishedType(){
     }
 }
 
-std::string GetUIBoardStringFromBoard(){
-    std::string notFEN = "";
-    for(int sq = 0; sq < 64; sq++){
-        switch(UI_board.PieceAtSquare(sq, Colour::white)){
-            case Piece::pawn: { notFEN += 'P'; continue; }
-            case Piece::knight: { notFEN += 'N'; continue; }
-            case Piece::bishop: { notFEN += 'B'; continue; }
-            case Piece::rook: { notFEN += 'R'; continue; }
-            case Piece::queen: { notFEN += 'Q'; continue; }
-            case Piece::king: { notFEN += 'K'; continue; }
-            default: { break; }
-        }
-        
-        switch(UI_board.PieceAtSquare(sq, Colour::black)){
-            case Piece::pawn: { notFEN += 'p'; break; }
-            case Piece::knight: { notFEN += 'n'; break; }
-            case Piece::bishop: { notFEN += 'b'; break; }
-            case Piece::rook: { notFEN += 'r'; break; }
-            case Piece::queen: { notFEN += 'q'; break; }
-            case Piece::king: { notFEN += 'k'; break; }
-            default: { notFEN += '-'; break; }
-        }
-    }
+struct GoParameters {
+    int wtime = -1;
+    int btime = -1;
+    int winc = 0;
+    int binc = 0;
+    int movestogo = -1;
+    int movetime = -1;
+    int depth = -1;
+    int nodes = -1;
+    bool infinite = false;
+    bool ponder = false;
+    std::vector<std::string> searchmoves;
+};
 
-    return notFEN;
+void ParseUCICommand_ucinewgame(){
+    memset(PV_table, 0, sizeof(PV_table));
+    memset(last_PV_table, 0, sizeof(last_PV_table));
+    memset(PV_length, 0, sizeof(PV_length));
+    memset(last_PV_length, 0, sizeof(last_PV_length));
+    memset(history_moves, 0, sizeof(history_moves));
+    WipeKillerTable();
+    nodes_searched = 0;
+    TT.Wipe();
 }
 
-HTTPReqRes UICommunication(HTTPRequest req, HTTPResponse res){
+void ParseUCICommand_position(std::stringstream& strstr){
+    std::string token;
+    strstr >> token;
 
-    if(req.target == "/poll-board-update"){
-        res.status_code = 200;
-        json j;
-        j["board"] = GetUIBoardStringFromBoard();
-        j["source"] = last_move_source_and_target[0];
-        j["target"] = last_move_source_and_target[1];
-        res.ApplicationJSON(j.dump());
+    if(token == "startpos"){
+        ParseFEN(start_pos);
+    } else if(token == "fen"){
+        std::string full_fen = "";
+        std::string fen_part = "";
+        for(int i = 0; i < 6; i++){
+            if(strstr >> fen_part){
+                full_fen += (i == 0 ? "" : " ") + fen_part;
+            }
+        }
+
+        ParseFEN(full_fen);
     }
 
-    return HTTPReqRes(req, res);
+
+
+    if(strstr >> token && token == "moves"){
+        std::string move_str;
+        uint16_t move;
+        while(strstr >> move_str){
+            move = ConvertLANMoveToEngineMoveIfLegal(move_str);
+            board.MakeMove(move, board.to_move);
+        }
+    }
+}
+
+int ComputeMoveTimeMs(GoParameters params){
+    int move_time_ms = 0;
+    
+    if(params.movetime != -1) {
+        return params.movetime;
+    }
+
+    int remaining_time = (board.to_move == Colour::white) ? params.wtime : params.btime;
+    int increment = (board.to_move == Colour::white) ? params.winc : params.binc;
+
+    if(remaining_time <= 0){ return 100; } // Fallback safety margin
+
+    // Fallback for moves left
+    int moves_left = (params.movestogo > 0) ? params.movestogo : 30;
+
+    int target_time = (remaining_time / moves_left) + increment - 50; // Safety buffer - 50ms
+    
+    return std::max(target_time, 10); // Always give at least 10ms
+}
+
+void ParseUCICommand_go(std::stringstream& strstr){
+    std::string token;
+    GoParameters params;
+
+    while(strstr >> token){
+        if (token == "wtime"){ strstr >> params.wtime; }
+        else if (token == "btime"){ strstr >> params.btime; }
+        else if (token == "winc"){ strstr >> params.winc; }
+        else if (token == "binc"){ strstr >> params.binc; }
+        else if (token == "movestogo"){ strstr >> params.movestogo; }
+        else if (token == "movetime"){ strstr >> params.movetime; }
+        else if (token == "depth"){ strstr >> params.depth; }
+        else if (token == "nodes"){ strstr >> params.nodes; }
+        else if (token == "infinite"){ params.infinite = true; }
+        else if (token == "ponder"){ params.ponder = true; }
+    }
+
+    // Compute move time --------------
+
+    int move_time_ms = params.infinite ? -1 : ComputeMoveTimeMs(params);
+
+    std::cout << move_time_ms << "\n";
+
+    // --------------------------------
+
+    search_timer.CancelTimer();
+
+    if(params.infinite){
+        std::thread search_thread([params](){
+            params.depth == -1 ? engine.IterativeSearch(MAX_PLY) : engine.IterativeSearch(params.depth);
+        });
+        search_thread.detach();
+    } else{
+        std::thread search_thread([params, move_time_ms](){
+            if(params.depth == -1){
+                search_timer.SetTimer(move_time_ms);
+                engine.IterativeSearch(MAX_PLY);
+                search_timer.CancelTimer();
+            }
+
+            else{
+                engine.IterativeSearch(params.depth);
+            }
+        });
+        search_thread.detach();
+    }
+}
+
+void ParseUCICommand_stop(std::stringstream& strstr){
+    search_timer.StopImmediately();
+}
+
+void UCILoop(){
+    std::string line;
+
+    while(std::getline(std::cin, line)){
+        if(!line.empty() && line.back() == '\r'){ line.pop_back(); }
+
+        std::stringstream strstr(line);
+        std::string command;
+        strstr >> command;
+
+        if(command == "uci"){
+            std::cout << "id name Xess 0.0\n";
+            std::cout << "id author fept\n";
+            std::cout << "uciok" << std::endl;
+        }
+
+        else if(command == "isready"){
+            std::cout << "readyok";
+        }
+
+        else if(command == "ucinewgame"){
+            ParseUCICommand_ucinewgame();
+        }
+
+        else if(command == "position"){
+            ParseUCICommand_position(strstr);
+        }
+
+        else if(command == "go"){
+            ParseUCICommand_go(strstr);
+        }
+
+        else if(command == "stop"){
+            ParseUCICommand_stop(strstr);
+        }
+
+        else if(command == "quit"){
+            break;
+        }
+    }
 }
 
 int main(){
-    Fepttp server = Fepttp(8000);
-    server.chain.push_back(UICommunication);
-    server.CORS.push_back("http://127.0.0.1:5500"); // <--- Add CORS header to allow reqs from 'Live Server' extension on port 5500
 
-    // ------------
+    // UPDATE THE HISTORY STACK AND STEADY PLY EVERYWHERE THEY NEED TO BE IN THE UCI SYSTEM
+    // POSSIBLY WIPE THE TABLES AT THE END OF IterativeSearch()
 
-    engine.search_depth_max = engine_search_depth_max;
-    engine.transposition_table_size_MB = engine_transposition_table_size_MB;
+    InitialiseAll();
+
+    //std::stringstream x("fen r1b1r1k1/1ppq1ppp/1nn5/pQ2p1B1/3b4/2NP1NP1/PP2PPBP/R1R3K1 w - - 4 13");
+    //ParseUCICommand_position(x);
+
+    //std::stringstream y("go wtime 165400 btime 172100 winc 2000 binc 2000 movestogo 36");
+    //ParseUCICommand_go(y);
+
+    //std::stringstream z("go infinite");
+    //ParseUCICommand_go(z);
+
+    UCILoop();
 
     ParseFEN(FEN);
     InitialiseAll();
     PrintBoardToTerminal();
-    UI_board = board;
 
     // ------------
-
-    server.run();
 
     // Gameplay loop
     while(GameFinishedType() == GameEnd::in_play){
@@ -205,35 +328,23 @@ int main(){
             }
 
             board.MakeMove(player_move, board.to_move);
-            UI_board.MakeMove(player_move, UI_board.to_move);
-            UpdateLastMoveSourceAndTarget(player_move);
             game.steady_ply++;
             game.history_stack[game.steady_ply].hash_key = board.hash_key;
         }
 
         // Engine to move
         else{
-            std::thread th(StartSearchTimer);
-            engine.IterativeSearch();
+            //std::thread th(StartSearchTimer, 15000);
+            //engine.IterativeSearch();
             // NEED TO TERMINATE THE FUNCTION, NOT JUST DELETE THE THREAD
-            th.detach(); th.~thread();
-            stop = false;
+            //th.detach(); th.~thread();
+            //stop = false;
 
             board.MakeMove(last_PV_table[0][0], board.to_move);
-            UI_board.MakeMove(last_PV_table[0][0], UI_board.to_move);
-            UpdateLastMoveSourceAndTarget(last_PV_table[0][0]);
             game.steady_ply++;
             game.history_stack[game.steady_ply].hash_key = board.hash_key;
 
-            memset(PV_table, 0, sizeof(PV_table));
-            memset(last_PV_table, 0, sizeof(last_PV_table));
-            memset(PV_length, 0, sizeof(PV_length));
-            memset(last_PV_length, 0, sizeof(last_PV_length));
-            memset(history_moves, 0, sizeof(history_moves));
-            WipeKillerTable();
-            nodes_searched = 0;
-
-            if(wipe_TT_each_move){ TT.Wipe(); }
+            engine.ClearTablesResetNodeCount();
         }
 
         PrintBoardToTerminal();

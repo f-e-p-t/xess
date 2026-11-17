@@ -5,22 +5,14 @@
 // | Engine Properties and Functions |-----------------------------------------
 // |---------------------------------|
 
-std::atomic<bool> stop = false;
-
-void StartSearchTimer(){
-    if(engine_search_time_limit_ms < 0){ return; }
-    Sleep(engine_search_time_limit_ms);
-    stop = true;
-}
-
 class Engine {
 public:
-    int search_depth_max;
-
     int transposition_table_size_MB;
 
     int Search(int depth, Stack * ss, int alpha, int beta){
-        if(stop){ return 0; } // <-- Time limit safety measure
+
+        // Time limits
+        if((nodes_searched & 2047ULL) == 0 && search_timer.TimeUp()){ return 0; }
 
         const int original_alpha = alpha;
         bool root_node = (ss->ply == 0);
@@ -87,7 +79,9 @@ public:
             UnmakeMoveGameState irr_info_null = board.MakeNullMove(board.to_move);
             int null_score = -Search(depth - 1 - NMP_reduction, ss + 1, -beta, -beta + 1);
             board.UnmakeNullMove(board.to_move, irr_info_null);
-            if(stop){ return 0; } // <-- Time limit safety measure
+
+            // Time limit
+            if((nodes_searched & 2047ULL) == 0 && search_timer.TimeUp()){ return 0; }
 
             if(null_score >= beta && std::abs(null_score) < CHECKMATE_THRESHOLD){
 
@@ -103,7 +97,9 @@ public:
                 NMP_min_ply = ss->ply + 3 + (depth / 4);
                 int verification = Search(depth - 1 - NMP_reduction, ss2, beta - 1, beta);
                 NMP_min_ply = NMP_min_ply_restore;
-                if(stop){ return 0; } // <-- Time limit safety measure
+
+                // Time limit
+                if((nodes_searched & 2047ULL) == 0 && search_timer.TimeUp()){ return 0; }
 
                 // Verified
                 if(verification >= beta){ return null_score; }
@@ -186,7 +182,8 @@ public:
             board.UnmakeMove(ss->current_move, board.to_move, irr_info);
             ss->moves_searched++;
 
-            if(stop){ return 0; } // <-- Time limit safety measure
+            // Time limit
+            if((nodes_searched & 2047ULL) == 0 && search_timer.TimeUp()){ return 0; }
 
             if(score > best_score){
                 best_score = score; best_move = ss->current_move;
@@ -259,7 +256,7 @@ public:
             PrepareBestMove(list, i);
             ss->current_move = list.list[i];
 
-            // If the move is a non-pawn-promotion capture and we are not in check, apply delta pruning
+            // Delta pruning
             int flag = ((ss->current_move & 0b1111000000000000) >> 12);
             if(!ss->in_check && flag > 3 && flag < 8){
                 int target_square = (ss->current_move & 0b0000111111000000) >> 6;
@@ -290,7 +287,7 @@ public:
         return best_score;
     }
 
-    void IterativeSearch(){
+    void IterativeSearch(int max_depth){
         int iteration_depth = 1;
         int s = 0;
 
@@ -300,26 +297,45 @@ public:
         for(int i = 0; i <= MAX_PLY + 2; i++){ (ss + i)->ply = i; }
         ss->on_PV_line = true; // (Root node)
 
-        while(iteration_depth <= search_depth_max){
+        while(iteration_depth <= max_depth){
             s = Search(iteration_depth, ss, -INFTY, INFTY);
 
             // Time has run out - do not update last_PV_table (the one the move is played from) and break
-            if(stop){ search_age++; nodes_searched = 0; break; }
+            if(search_timer.TimeUp()){ search_age++; nodes_searched = 0; break; }
 
             memcpy(last_PV_table, PV_table, sizeof(last_PV_table));
             memcpy(last_PV_length, PV_length, sizeof(last_PV_length));
 
-            std::cout << "Depth " << iteration_depth << " | Nodes: " << nodes_searched << " | Score: " << s << " | PV:";
-            PrintPVToTerminal();
-            std::cout << "\n";
-            
+            // UCI
+            std::cout << "info score cp " << s;
+            std::cout << " depth " << iteration_depth;
+            std::cout << " nodes " << nodes_searched;
+            std::cout << " time " << search_timer.MillisecondsSinceLastSet();
+            std::cout << std::endl;
+
             nodes_searched = 0;
             iteration_depth++;
         }
 
+        // UCI
+        std::cout << "bestmove "; PrintMoveToTerminalNoFlag(last_PV_table[0][0]); std::cout << std::endl;
+
         search_age++;
 
         std::cout << "\n";
+    }
+
+    // PV tables, PV length tables, history, killers, node count, TT if option is enabled
+    void ClearTablesResetNodeCount(){
+        memset(PV_table, 0, sizeof(PV_table));
+        memset(last_PV_table, 0, sizeof(last_PV_table));
+        memset(PV_length, 0, sizeof(PV_length));
+        memset(last_PV_length, 0, sizeof(last_PV_length));
+        memset(history_moves, 0, sizeof(history_moves));
+        WipeKillerTable();
+        nodes_searched = 0;
+
+        if(wipe_TT_each_move){ TT.Wipe(); }
     }
 
     // Also returns 0 if inappropriate to reduce
